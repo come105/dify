@@ -9,6 +9,7 @@ import type {
   VariableBlockType,
   WorkflowVariableBlockType,
 } from '../../../types'
+import type { TreeNodeData } from '@/app/components/workflow/skill/type'
 import type { NodeOutPutVar, Var } from '@/app/components/workflow/types'
 import type { EventEmitterValue } from '@/context/event-emitter'
 import { LexicalComposer } from '@lexical/react/LexicalComposer'
@@ -27,6 +28,7 @@ import {
 } from 'lexical'
 import * as React from 'react'
 import { GeneratorType } from '@/app/components/app/configuration/config/automatic/types'
+import { FileReferenceNode } from '@/app/components/workflow/skill/editor/skill-editor/plugins/file-reference-block/node'
 import { VarType } from '@/app/components/workflow/types'
 import { useEventEmitterContextContext } from '@/context/event-emitter'
 import { EventEmitterContextProvider } from '@/context/event-emitter-provider'
@@ -61,6 +63,73 @@ beforeAll(() => {
   })
   Range.prototype.getBoundingClientRect = vi.fn(() => mockDOMRect as DOMRect)
 })
+
+const mocks = vi.hoisted(() => ({
+  uploadedResourceIds: ['11111111-1111-1111-1111-111111111111'],
+}))
+
+vi.mock('@/app/components/workflow/skill/editor/skill-editor/plugins/file-picker-panel', () => ({
+  FilePickerPanel: ({
+    onSelectNode,
+    showAddFiles,
+    onAddFiles,
+  }: {
+    onSelectNode: (node: TreeNodeData) => void
+    showAddFiles?: boolean
+    onAddFiles?: () => void
+  }) => (
+    <div>
+      <button
+        type="button"
+        onClick={() => onSelectNode({
+          id: '33333333-3333-3333-3333-333333333333',
+          node_type: 'file',
+          name: 'existing.md',
+          path: '/existing.md',
+          extension: 'md',
+          size: 1,
+          children: [],
+        })}
+      >
+        mock-existing-file
+      </button>
+      {showAddFiles && (
+        <button type="button" onClick={onAddFiles}>
+          mock-add-files
+        </button>
+      )}
+    </div>
+  ),
+}))
+
+vi.mock('@/app/components/workflow/skill/editor/skill-editor/plugins/file-picker-upload-modal', () => ({
+  default: ({
+    isOpen,
+    onUploadedFiles,
+  }: {
+    isOpen: boolean
+    onClose: () => void
+    onUploadedFiles?: (resourceIds: string[]) => void
+  }) => {
+    if (!isOpen)
+      return null
+
+    return (
+      <button
+        type="button"
+        onClick={() => onUploadedFiles?.(mocks.uploadedResourceIds)}
+      >
+        mock-upload-success
+      </button>
+    )
+  },
+}))
+
+vi.mock('@/app/components/workflow/skill/editor/skill-editor/plugins/file-reference-block/component', () => ({
+  default: ({ resourceId }: { resourceId: string }) => (
+    <span>{`mock-file-reference:${resourceId}`}</span>
+  ),
+}))
 
 // ─── Typed factories (no `any` / `never`) ────────────────────────────────────
 
@@ -148,6 +217,7 @@ const MinimalEditor: React.FC<{
   currentBlock?: CurrentBlockType
   errorMessageBlock?: ErrorMessageBlockType
   lastRunBlock?: LastRunBlockType
+  isSupportSandbox?: boolean
   captures: Captures
 }> = ({
   triggerString,
@@ -158,10 +228,12 @@ const MinimalEditor: React.FC<{
   currentBlock,
   errorMessageBlock,
   lastRunBlock,
+  isSupportSandbox,
   captures,
 }) => {
   const initialConfig = React.useMemo(() => ({
     namespace: `component-picker-test-${Math.random().toString(16).slice(2)}`,
+    nodes: [FileReferenceNode],
     onError: (e: Error) => {
       throw e
     },
@@ -187,6 +259,7 @@ const MinimalEditor: React.FC<{
           currentBlock={currentBlock}
           errorMessageBlock={errorMessageBlock}
           lastRunBlock={lastRunBlock}
+          isSupportSandbox={isSupportSandbox}
         />
       </LexicalComposer>
     </EventEmitterContextProvider>
@@ -702,6 +775,35 @@ describe('ComponentPicker (component-picker-block/index.tsx)', () => {
     await waitFor(() => {
       expect(screen.queryByText('Agent One')).not.toBeInTheDocument()
       expect(screen.queryByPlaceholderText('workflow.common.searchVar')).not.toBeInTheDocument()
+    })
+  })
+
+  it('inserts uploaded files into the editor after add files succeeds from the sandbox slash menu', async () => {
+    const user = userEvent.setup()
+    const captures: Captures = { editor: null, eventEmitter: null }
+
+    render((
+      <MinimalEditor
+        triggerString="/"
+        workflowVariableBlock={makeWorkflowVariableBlock({}, [
+          makeWorkflowVarNode('node-1', 'Node 1', [makeWorkflowNodeVar('output', VarType.string)]),
+        ])}
+        isSupportSandbox
+        captures={captures}
+      />
+    ))
+
+    const editor = await waitForEditor(captures)
+    await setEditorText(editor, '/', true)
+    await flushNextTick()
+
+    await user.click(await screen.findByText('workflow.nodes.llm.files'))
+    await user.click(await screen.findByRole('button', { name: 'mock-add-files' }))
+    await user.click(await screen.findByRole('button', { name: 'mock-upload-success' }))
+
+    await waitFor(() => {
+      expect(readEditorText(editor)).toContain('§[file].[app].[11111111-1111-1111-1111-111111111111]§')
+      expect(readEditorText(editor)).not.toContain('/')
     })
   })
 })
